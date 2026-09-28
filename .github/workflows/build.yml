@@ -7,12 +7,18 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
+      - name: Xcode info
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks | tee sdks.txt
+          if ! grep -q "iphoneos" sdks.txt; then
+            echo "::warning::iOS SDK missing, downloading platform"
+            xcodebuild -downloadPlatform iOS
+          fi
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -22,14 +28,24 @@ jobs:
 
       - name: Build (unsigned)
         run: |
+          set -o pipefail
           xcodebuild \
             -project LidarCapture.xcodeproj \
             -scheme LidarCapture \
             -configuration Release \
-            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build
+            build 2>&1 | tee build.log
+          status=${PIPESTATUS[0]}
+          if [ $status -ne 0 ]; then
+            # surface errors as public annotations
+            grep -E "error:|fatal|Unable to|No such" build.log | sort -u | head -40 | while IFS= read -r line; do
+              echo "::error::${line:0:900}"
+            done
+            tail -25 build.log | while IFS= read -r line; do echo "::notice::${line:0:900}"; done
+            exit $status
+          fi
 
       - name: Package IPA
         run: |
